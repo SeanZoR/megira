@@ -1,0 +1,40 @@
+{
+  "name": "megira",
+  "version": "1.0.0",
+  "description": "חלומות במגירה - Publish your Notion content to LinkedIn & X with AI-matched quotes",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "prepare-quotes": "npx tsx scripts/prepare-quotes.ts",
+    "oauth:x": "npx tsx scripts/oauth-x.ts",
+    "oauth:linkedin": "npx tsx scripts/oauth-linkedin.ts"
+  },
+  "keywords": [
+    "notion",
+    "linkedin",
+    "twitter",
+    "x",
+    "social-media",
+    "automation",
+    "cloudflare-workers",
+    "quotes"
+  ],
+  "author": "Sean Katz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SeanZoR/megira"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.25.0"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.14",
+    "hono": "^4.0.0",
+    "open": "^11.0.0"
+  }
+}

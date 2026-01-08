@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files with secrets
+.env
+.env.local
+
+# Quote data (stored in R2)
+quotes.json
