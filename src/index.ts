@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
-import { getReadyPosts, markAsPublished } from './notion';
-import { getNextOptimalSlot, isWithinPostingWindow } from './scheduler';
+import {
+  getScheduledPosts,
+  markSchedulePublishing,
+  markSchedulePublished,
+  markScheduleFailed,
+  markContentPublished,
+} from './notion';
 import { matchQuoteToContent, generateQuoteImage } from './quotes';
 import { postToX } from './publishers/x';
 import { postToLinkedIn } from './publishers/linkedin';
@@ -10,6 +15,7 @@ type Bindings = {
   R2: R2Bucket;
   NOTION_TOKEN: string;
   NOTION_DATABASE_ID: string;
+  NOTION_SCHEDULE_DB_ID: string;
   ANTHROPIC_API_KEY: string;
   X_CLIENT_ID: string;
   X_CLIENT_SECRET: string;
@@ -26,63 +32,64 @@ app.get('/', (c) => {
   return c.json({
     status: 'ok',
     name: 'megira',
-    description: 'חלומות במגירה - Dreams from the drawer'
+    description: 'חלומות במגירה - Dreams from the drawer',
+    version: '2.0.0',
+    architecture: 'Notion-driven scheduling',
   });
 });
 
 // Manual trigger endpoint (for testing)
 app.post('/publish', async (c) => {
-  const result = await processReadyPosts(c.env);
+  const result = await processScheduledPosts(c.env);
   return c.json(result);
 });
 
-// Get queue status
-app.get('/queue', async (c) => {
-  const queue = await c.env.KV.list({ prefix: 'queue:' });
-  const published = await c.env.KV.list({ prefix: 'published:' });
-
+// Get status
+app.get('/status', async (c) => {
   return c.json({
-    queued: queue.keys.length,
-    published: published.keys.length,
-    queuedItems: queue.keys.map(k => k.name),
+    contentDbId: c.env.NOTION_DATABASE_ID,
+    scheduleDbId: c.env.NOTION_SCHEDULE_DB_ID,
+    timezone: c.env.TIMEZONE,
+    hasXToken: !!c.env.X_ACCESS_TOKEN && c.env.X_ACCESS_TOKEN !== 'placeholder',
+    hasLinkedInToken: !!c.env.LINKEDIN_ACCESS_TOKEN && c.env.LINKEDIN_ACCESS_TOKEN !== 'placeholder',
+    hasAnthropicKey: !!c.env.ANTHROPIC_API_KEY && c.env.ANTHROPIC_API_KEY !== 'placeholder',
   });
 });
 
-async function processReadyPosts(env: Bindings): Promise<{ processed: number; errors: string[] }> {
+async function processScheduledPosts(env: Bindings): Promise<{ processed: number; errors: string[] }> {
   const errors: string[] = [];
   let processed = 0;
 
   try {
-    // Get posts with "Ready" status from Notion
-    const readyPosts = await getReadyPosts(env.NOTION_TOKEN, env.NOTION_DATABASE_ID);
+    // Get posts scheduled for now or earlier from Notion
+    const scheduledPosts = await getScheduledPosts(
+      env.NOTION_TOKEN,
+      env.NOTION_SCHEDULE_DB_ID,
+      env.NOTION_DATABASE_ID
+    );
 
-    for (const post of readyPosts) {
-      // Check if already published
-      const alreadyPublished = await env.KV.get(`published:${post.id}`);
-      if (alreadyPublished) {
+    console.log(`Found ${scheduledPosts.length} scheduled posts due for publishing`);
+
+    for (const scheduled of scheduledPosts) {
+      if (!scheduled.content) {
+        errors.push(`Schedule ${scheduled.id}: No linked content found`);
+        await markScheduleFailed(env.NOTION_TOKEN, scheduled.id, 'No linked content found');
         continue;
       }
 
-      // Check if within optimal posting window
-      if (!isWithinPostingWindow(env.TIMEZONE)) {
-        // Queue for later
-        const nextSlot = getNextOptimalSlot(env.TIMEZONE);
-        await env.KV.put(`queue:${nextSlot}:${post.id}`, JSON.stringify(post), {
-          expirationTtl: 86400 // 24 hours
-        });
-        continue;
-      }
+      // Mark as publishing
+      await markSchedulePublishing(env.NOTION_TOKEN, scheduled.id);
 
       try {
         let imageUrl: string | undefined;
 
         // Handle quote if requested
-        if (post.includeQuote) {
+        if (scheduled.includeQuote) {
           const quotesData = await env.R2.get('quotes.json');
           if (quotesData) {
             const quotes = JSON.parse(await quotesData.text());
             const matchedQuote = await matchQuoteToContent(
-              post.content,
+              scheduled.content.content,
               quotes.quotes,
               env.ANTHROPIC_API_KEY
             );
@@ -95,70 +102,66 @@ async function processReadyPosts(env: Bindings): Promise<{ processed: number; er
               if (!imageData) {
                 const generatedImage = await generateQuoteImage(matchedQuote);
                 await env.R2.put(imageKey, generatedImage);
-                imageData = await env.R2.get(imageKey);
               }
 
-              if (imageData) {
-                imageUrl = `https://megira-quotes.${env.R2.toString()}.r2.cloudflarestorage.com/${imageKey}`;
-              }
+              // For now, we'd need a public R2 URL or use inline image upload
+              // imageUrl = ...
             }
           }
         }
 
-        // Post to X
-        const xResult = await postToX(
-          post.content,
-          imageUrl,
-          {
-            accessToken: env.X_ACCESS_TOKEN,
-            refreshToken: env.X_REFRESH_TOKEN,
-            clientId: env.X_CLIENT_ID,
-            clientSecret: env.X_CLIENT_SECRET,
+        const postUrls: { xUrl?: string; linkedInUrl?: string } = {};
+
+        // Post to X if platform includes X
+        if (scheduled.platform === 'X' || scheduled.platform === 'Both') {
+          try {
+            const xResult = await postToX(
+              scheduled.content.content,
+              imageUrl,
+              {
+                accessToken: env.X_ACCESS_TOKEN,
+                refreshToken: env.X_REFRESH_TOKEN,
+                clientId: env.X_CLIENT_ID,
+                clientSecret: env.X_CLIENT_SECRET,
+              }
+            );
+            postUrls.xUrl = xResult.url;
+            console.log(`Posted to X: ${xResult.url}`);
+          } catch (xError) {
+            console.error('X posting failed:', xError);
+            errors.push(`X posting failed for ${scheduled.id}: ${xError}`);
           }
-        );
-
-        // Post to LinkedIn
-        const linkedInResult = await postToLinkedIn(
-          post.content,
-          imageUrl,
-          env.LINKEDIN_ACCESS_TOKEN
-        );
-
-        // Mark as published in Notion
-        await markAsPublished(
-          env.NOTION_TOKEN,
-          post.id,
-          {
-            xUrl: xResult.url,
-            linkedInUrl: linkedInResult.url,
-          }
-        );
-
-        // Track in KV
-        await env.KV.put(`published:${post.id}`, JSON.stringify({
-          publishedAt: new Date().toISOString(),
-          xUrl: xResult.url,
-          linkedInUrl: linkedInResult.url,
-        }));
-
-        processed++;
-      } catch (error) {
-        errors.push(`Failed to publish post ${post.id}: ${error}`);
-      }
-    }
-
-    // Process queued posts that are due
-    const now = Date.now();
-    const queuedPosts = await env.KV.list({ prefix: 'queue:' });
-
-    for (const key of queuedPosts.keys) {
-      const [, timestamp] = key.name.split(':');
-      if (parseInt(timestamp) <= now) {
-        const postData = await env.KV.get(key.name);
-        if (postData) {
-          // Re-queue for processing
-          await env.KV.delete(key.name);
         }
+
+        // Post to LinkedIn if platform includes LinkedIn
+        if (scheduled.platform === 'LinkedIn' || scheduled.platform === 'Both') {
+          try {
+            const linkedInResult = await postToLinkedIn(
+              scheduled.content.content,
+              imageUrl,
+              env.LINKEDIN_ACCESS_TOKEN
+            );
+            postUrls.linkedInUrl = linkedInResult.url;
+            console.log(`Posted to LinkedIn: ${linkedInResult.url}`);
+          } catch (liError) {
+            console.error('LinkedIn posting failed:', liError);
+            errors.push(`LinkedIn posting failed for ${scheduled.id}: ${liError}`);
+          }
+        }
+
+        // If at least one platform succeeded, mark as published
+        if (postUrls.xUrl || postUrls.linkedInUrl) {
+          await markSchedulePublished(env.NOTION_TOKEN, scheduled.id, postUrls);
+          await markContentPublished(env.NOTION_TOKEN, scheduled.contentId);
+          processed++;
+        } else {
+          await markScheduleFailed(env.NOTION_TOKEN, scheduled.id, 'All platforms failed');
+        }
+
+      } catch (error) {
+        const errorMsg = `Failed to publish: ${error}`;
+        errors.push(`Schedule ${scheduled.id}: ${errorMsg}`);
+        await markScheduleFailed(env.NOTION_TOKEN, scheduled.id, errorMsg);
       }
     }
 
@@ -169,11 +172,12 @@ async function processReadyPosts(env: Bindings): Promise<{ processed: number; er
   return { processed, errors };
 }
 
-// Cron handler
+// Cron handler - runs every 15 minutes
 export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(processReadyPosts(env));
+    console.log('Cron triggered at:', new Date().toISOString());
+    ctx.waitUntil(processScheduledPosts(env));
   },
 };

@@ -1,3 +1,4 @@
+// Types for Content database
 interface NotionPost {
   id: string;
   title: string;
@@ -7,19 +8,222 @@ interface NotionPost {
   quoteOverride?: string;
 }
 
+// Types for Schedule database
+interface ScheduledPost {
+  id: string;
+  contentId: string;
+  scheduledFor: Date;
+  platform: 'X' | 'LinkedIn' | 'Both';
+  status: 'Scheduled' | 'Publishing' | 'Published' | 'Failed';
+  includeQuote: boolean;
+  content?: NotionPost; // Populated from linked content
+}
+
 interface NotionPage {
   id: string;
-  properties: {
-    Title?: { title: Array<{ plain_text: string }> };
-    Content?: { rich_text: Array<{ plain_text: string }> };
-    Status?: { select: { name: string } };
-    'Include Quote'?: { checkbox: boolean };
-    'Quote Override'?: { rich_text: Array<{ plain_text: string }> };
-    'Published At'?: { date: { start: string } | null };
-    'Post URLs'?: { rich_text: Array<{ plain_text: string }> };
+  properties: Record<string, any>;
+}
+
+// Fetch scheduled posts that are due for publishing
+export async function getScheduledPosts(
+  notionToken: string,
+  scheduleDbId: string,
+  contentDbId: string
+): Promise<ScheduledPost[]> {
+  const now = new Date().toISOString();
+
+  // Query Schedule DB for posts that are due
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${scheduleDbId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          and: [
+            {
+              property: 'Status',
+              select: { equals: 'Scheduled' },
+            },
+            {
+              property: 'Scheduled For',
+              date: { on_or_before: now },
+            },
+          ],
+        },
+        sorts: [
+          {
+            property: 'Scheduled For',
+            direction: 'ascending',
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Notion API error: ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json() as { results: NotionPage[] };
+  const scheduledPosts: ScheduledPost[] = [];
+
+  for (const page of data.results) {
+    const props = page.properties;
+
+    // Get linked content ID
+    const contentRelation = props['Content']?.relation?.[0]?.id;
+    if (!contentRelation) continue;
+
+    // Fetch the linked content
+    const content = await getContentById(notionToken, contentRelation);
+    if (!content) continue;
+
+    scheduledPosts.push({
+      id: page.id,
+      contentId: contentRelation,
+      scheduledFor: new Date(props['Scheduled For']?.date?.start || ''),
+      platform: props['Platform']?.select?.name || 'Both',
+      status: props['Status']?.select?.name || 'Scheduled',
+      includeQuote: props['Include Quote']?.checkbox || false,
+      content,
+    });
+  }
+
+  return scheduledPosts;
+}
+
+// Fetch a single content item by ID
+async function getContentById(
+  notionToken: string,
+  pageId: string
+): Promise<NotionPost | null> {
+  const response = await fetch(
+    `https://api.notion.com/v1/pages/${pageId}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+      },
+    }
+  );
+
+  if (!response.ok) return null;
+
+  const page = await response.json() as NotionPage;
+  const props = page.properties;
+
+  return {
+    id: page.id,
+    title: props.Title?.title?.[0]?.plain_text || '',
+    content: props.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '',
+    status: props.Status?.select?.name || '',
+    includeQuote: props['Include Quote']?.checkbox || false,
+    quoteOverride: props['Quote Override']?.rich_text?.[0]?.plain_text,
   };
 }
 
+// Update schedule status to "Publishing"
+export async function markSchedulePublishing(
+  notionToken: string,
+  scheduleId: string
+): Promise<void> {
+  await updateSchedulePage(notionToken, scheduleId, {
+    'Status': { select: { name: 'Publishing' } },
+  });
+}
+
+// Mark schedule as published with post URLs
+export async function markSchedulePublished(
+  notionToken: string,
+  scheduleId: string,
+  urls: { xUrl?: string; linkedInUrl?: string }
+): Promise<void> {
+  const properties: Record<string, any> = {
+    'Status': { select: { name: 'Published' } },
+    'Published At': { date: { start: new Date().toISOString() } },
+  };
+
+  if (urls.xUrl) {
+    properties['X Post URL'] = { url: urls.xUrl };
+  }
+  if (urls.linkedInUrl) {
+    properties['LinkedIn Post URL'] = { url: urls.linkedInUrl };
+  }
+
+  await updateSchedulePage(notionToken, scheduleId, properties);
+}
+
+// Mark schedule as failed with error message
+export async function markScheduleFailed(
+  notionToken: string,
+  scheduleId: string,
+  error: string
+): Promise<void> {
+  await updateSchedulePage(notionToken, scheduleId, {
+    'Status': { select: { name: 'Failed' } },
+    'Error': {
+      rich_text: [{ type: 'text', text: { content: error.substring(0, 2000) } }],
+    },
+  });
+}
+
+// Helper to update a schedule page
+async function updateSchedulePage(
+  notionToken: string,
+  pageId: string,
+  properties: Record<string, any>
+): Promise<void> {
+  const response = await fetch(
+    `https://api.notion.com/v1/pages/${pageId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ properties }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to update schedule: ${response.status}`);
+  }
+}
+
+// Also update the content status to Published
+export async function markContentPublished(
+  notionToken: string,
+  contentId: string
+): Promise<void> {
+  const response = await fetch(
+    `https://api.notion.com/v1/pages/${contentId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        properties: {
+          'Status': { select: { name: 'Published' } },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to update content: ${response.status}`);
+  }
+}
+
+// Legacy function for backward compatibility
 export async function getReadyPosts(
   notionToken: string,
   databaseId: string
@@ -36,9 +240,7 @@ export async function getReadyPosts(
       body: JSON.stringify({
         filter: {
           property: 'Status',
-          select: {
-            equals: 'Ready',
-          },
+          select: { equals: 'Ready' },
         },
       }),
     }
@@ -53,13 +255,14 @@ export async function getReadyPosts(
   return data.results.map((page) => ({
     id: page.id,
     title: page.properties.Title?.title?.[0]?.plain_text || '',
-    content: page.properties.Content?.rich_text?.map(t => t.plain_text).join('') || '',
+    content: page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '',
     status: page.properties.Status?.select?.name || '',
     includeQuote: page.properties['Include Quote']?.checkbox || false,
     quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
   }));
 }
 
+// Legacy function
 export async function markAsPublished(
   notionToken: string,
   pageId: string,
@@ -70,7 +273,7 @@ export async function markAsPublished(
     urls.linkedInUrl && `LinkedIn: ${urls.linkedInUrl}`,
   ].filter(Boolean).join('\n');
 
-  const response = await fetch(
+  await fetch(
     `https://api.notion.com/v1/pages/${pageId}`,
     {
       method: 'PATCH',
@@ -81,32 +284,13 @@ export async function markAsPublished(
       },
       body: JSON.stringify({
         properties: {
-          'Status': {
-            select: {
-              name: 'Published',
-            },
-          },
-          'Published At': {
-            date: {
-              start: new Date().toISOString(),
-            },
-          },
+          'Status': { select: { name: 'Published' } },
+          'Published At': { date: { start: new Date().toISOString() } },
           'Post URLs': {
-            rich_text: [
-              {
-                type: 'text',
-                text: {
-                  content: postUrls,
-                },
-              },
-            ],
+            rich_text: [{ type: 'text', text: { content: postUrls } }],
           },
         },
       }),
     }
   );
-
-  if (!response.ok) {
-    throw new Error(`Failed to update Notion page: ${response.status}`);
-  }
 }
