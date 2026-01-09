@@ -8,7 +8,7 @@ let cachedPageId: string | null = null;
 
 export async function postToLinkedIn(
   content: string,
-  imageUrl?: string,
+  imageUrls?: string[],
   accessToken?: string
 ): Promise<PostResult> {
   if (!accessToken) {
@@ -18,11 +18,20 @@ export async function postToLinkedIn(
   // Get the organization/page ID
   const pageId = await getPageId(accessToken);
 
-  let mediaAsset: string | undefined;
+  const mediaAssets: string[] = [];
 
-  // Upload image if provided
-  if (imageUrl) {
-    mediaAsset = await uploadImage(imageUrl, pageId, accessToken);
+  // Upload images if provided (LinkedIn supports up to 9 images)
+  if (imageUrls && imageUrls.length > 0) {
+    const imagesToUpload = imageUrls.slice(0, 9); // LinkedIn limit is 9 images
+    for (const imageUrl of imagesToUpload) {
+      try {
+        const mediaAsset = await uploadImage(imageUrl, pageId, accessToken);
+        mediaAssets.push(mediaAsset);
+      } catch (error) {
+        console.error(`Failed to upload image ${imageUrl}:`, error);
+        // Continue with other images if one fails
+      }
+    }
   }
 
   // Create post payload for organization page
@@ -34,11 +43,11 @@ export async function postToLinkedIn(
         shareCommentary: {
           text: content.substring(0, 3000), // LinkedIn limit
         },
-        shareMediaCategory: mediaAsset ? 'IMAGE' : 'NONE',
-        media: mediaAsset ? [{
+        shareMediaCategory: mediaAssets.length > 0 ? 'IMAGE' : 'NONE',
+        media: mediaAssets.length > 0 ? mediaAssets.map(asset => ({
           status: 'READY',
-          media: mediaAsset,
-        }] : undefined,
+          media: asset,
+        })) : undefined,
       },
     },
     visibility: {

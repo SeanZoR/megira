@@ -81,9 +81,10 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
       await markSchedulePublishing(env.NOTION_TOKEN, scheduled.id);
 
       try {
-        let imageUrl: string | undefined;
+        // Collect all images to post
+        const imagesToPost: string[] = [...(scheduled.content.images || [])];
 
-        // Handle quote if requested
+        // Handle quote if requested (adds to images)
         if (scheduled.includeQuote) {
           const quotesData = await env.R2.get('quotes.json');
           if (quotesData) {
@@ -105,10 +106,12 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
               }
 
               // For now, we'd need a public R2 URL or use inline image upload
-              // imageUrl = ...
+              // imagesToPost.push(quoteImageUrl);
             }
           }
         }
+
+        console.log(`Post has ${imagesToPost.length} inline images`);
 
         const postUrls: { xUrl?: string; linkedInUrl?: string } = {};
 
@@ -117,7 +120,7 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
           try {
             const xResult = await postToX(
               scheduled.content.content,
-              imageUrl,
+              imagesToPost.length > 0 ? imagesToPost : undefined,
               {
                 accessToken: env.X_ACCESS_TOKEN,
                 refreshToken: env.X_REFRESH_TOKEN,
@@ -138,7 +141,7 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
           try {
             const linkedInResult = await postToLinkedIn(
               scheduled.content.content,
-              imageUrl,
+              imagesToPost.length > 0 ? imagesToPost : undefined,
               env.LINKEDIN_ACCESS_TOKEN
             );
             postUrls.linkedInUrl = linkedInResult.url;

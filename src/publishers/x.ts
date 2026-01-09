@@ -12,18 +12,27 @@ interface PostResult {
 
 export async function postToX(
   content: string,
-  imageUrl?: string,
+  imageUrls?: string[],
   credentials?: XCredentials
 ): Promise<PostResult> {
   if (!credentials) {
     throw new Error('X credentials not provided');
   }
 
-  let mediaId: string | undefined;
+  const mediaIds: string[] = [];
 
-  // Upload media if provided
-  if (imageUrl) {
-    mediaId = await uploadMedia(imageUrl, credentials);
+  // Upload media if provided (X supports up to 4 images)
+  if (imageUrls && imageUrls.length > 0) {
+    const imagesToUpload = imageUrls.slice(0, 4); // X limit is 4 images
+    for (const imageUrl of imagesToUpload) {
+      try {
+        const mediaId = await uploadMedia(imageUrl, credentials);
+        mediaIds.push(mediaId);
+      } catch (error) {
+        console.error(`Failed to upload image ${imageUrl}:`, error);
+        // Continue with other images if one fails
+      }
+    }
   }
 
   // Create tweet
@@ -34,8 +43,8 @@ export async function postToX(
     text: content.substring(0, 280), // X character limit
   };
 
-  if (mediaId) {
-    tweetPayload.media = { media_ids: [mediaId] };
+  if (mediaIds.length > 0) {
+    tweetPayload.media = { media_ids: mediaIds };
   }
 
   const response = await fetch('https://api.twitter.com/2/tweets', {
@@ -54,7 +63,7 @@ export async function postToX(
     if (response.status === 401) {
       const newToken = await refreshAccessToken(credentials);
       // Retry with new token
-      return postToX(content, imageUrl, {
+      return postToX(content, imageUrls, {
         ...credentials,
         accessToken: newToken,
       });

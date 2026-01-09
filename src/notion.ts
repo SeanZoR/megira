@@ -3,9 +3,29 @@ interface NotionPost {
   id: string;
   title: string;
   content: string;
+  images: string[]; // Inline images from page body
   status: string;
   includeQuote: boolean;
   quoteOverride?: string;
+}
+
+// Notion block types we care about
+interface NotionBlock {
+  id: string;
+  type: string;
+  paragraph?: { rich_text: Array<{ plain_text: string }> };
+  heading_1?: { rich_text: Array<{ plain_text: string }> };
+  heading_2?: { rich_text: Array<{ plain_text: string }> };
+  heading_3?: { rich_text: Array<{ plain_text: string }> };
+  bulleted_list_item?: { rich_text: Array<{ plain_text: string }> };
+  numbered_list_item?: { rich_text: Array<{ plain_text: string }> };
+  quote?: { rich_text: Array<{ plain_text: string }> };
+  callout?: { rich_text: Array<{ plain_text: string }> };
+  image?: {
+    type: 'file' | 'external';
+    file?: { url: string };
+    external?: { url: string };
+  };
 }
 
 // Types for Schedule database
@@ -97,6 +117,98 @@ export async function getScheduledPosts(
   return scheduledPosts;
 }
 
+// Fetch page blocks (body content) and parse into text + images
+async function getPageBlocks(
+  notionToken: string,
+  pageId: string
+): Promise<{ text: string; images: string[] }> {
+  const textParts: string[] = [];
+  const images: string[] = [];
+
+  let cursor: string | undefined;
+  let hasMore = true;
+
+  // Paginate through all blocks
+  while (hasMore) {
+    const url = new URL(`https://api.notion.com/v1/blocks/${pageId}/children`);
+    if (cursor) url.searchParams.set('start_cursor', cursor);
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+      },
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to fetch blocks: ${response.status}`);
+      break;
+    }
+
+    const data = await response.json() as {
+      results: NotionBlock[];
+      has_more: boolean;
+      next_cursor: string | null;
+    };
+
+    for (const block of data.results) {
+      // Extract text from text-based blocks
+      const textContent = extractTextFromBlock(block);
+      if (textContent) {
+        textParts.push(textContent);
+      }
+
+      // Extract images
+      if (block.type === 'image' && block.image) {
+        const imageUrl = block.image.type === 'file'
+          ? block.image.file?.url
+          : block.image.external?.url;
+
+        if (imageUrl) {
+          images.push(imageUrl);
+        }
+      }
+    }
+
+    hasMore = data.has_more;
+    cursor = data.next_cursor || undefined;
+  }
+
+  return {
+    text: textParts.join('\n\n'),
+    images,
+  };
+}
+
+// Extract plain text from various block types
+function extractTextFromBlock(block: NotionBlock): string | null {
+  const richTextBlocks: Array<keyof NotionBlock> = [
+    'paragraph',
+    'heading_1',
+    'heading_2',
+    'heading_3',
+    'bulleted_list_item',
+    'numbered_list_item',
+    'quote',
+    'callout',
+  ];
+
+  for (const blockType of richTextBlocks) {
+    const content = block[blockType] as { rich_text: Array<{ plain_text: string }> } | undefined;
+    if (content?.rich_text) {
+      const text = content.rich_text.map((t) => t.plain_text).join('');
+      if (text.trim()) {
+        // Add bullet/number prefix for list items
+        if (blockType === 'bulleted_list_item') return `• ${text}`;
+        if (blockType === 'numbered_list_item') return `- ${text}`;
+        return text;
+      }
+    }
+  }
+
+  return null;
+}
+
 // Fetch a single content item by ID
 async function getContentById(
   notionToken: string,
@@ -117,10 +229,17 @@ async function getContentById(
   const page = await response.json() as NotionPage;
   const props = page.properties;
 
+  // Fetch page body content (blocks) for text and images
+  const pageContent = await getPageBlocks(notionToken, pageId);
+
+  // Use page body content if available, fallback to Content property
+  const content = pageContent.text || props.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+
   return {
     id: page.id,
     title: props.Title?.title?.[0]?.plain_text || '',
-    content: props.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '',
+    content,
+    images: pageContent.images,
     status: props.Status?.select?.name || '',
     includeQuote: props['Include Quote']?.checkbox || false,
     quoteOverride: props['Quote Override']?.rich_text?.[0]?.plain_text,
@@ -252,14 +371,24 @@ export async function getReadyPosts(
 
   const data = await response.json() as { results: NotionPage[] };
 
-  return data.results.map((page) => ({
-    id: page.id,
-    title: page.properties.Title?.title?.[0]?.plain_text || '',
-    content: page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '',
-    status: page.properties.Status?.select?.name || '',
-    includeQuote: page.properties['Include Quote']?.checkbox || false,
-    quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
-  }));
+  // Fetch page blocks for each post to get content and images
+  const posts: NotionPost[] = [];
+  for (const page of data.results) {
+    const pageContent = await getPageBlocks(notionToken, page.id);
+    const content = pageContent.text || page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+
+    posts.push({
+      id: page.id,
+      title: page.properties.Title?.title?.[0]?.plain_text || '',
+      content,
+      images: pageContent.images,
+      status: page.properties.Status?.select?.name || '',
+      includeQuote: page.properties['Include Quote']?.checkbox || false,
+      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
+    });
+  }
+
+  return posts;
 }
 
 // Legacy function
