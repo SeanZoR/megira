@@ -3,8 +3,8 @@ interface PostResult {
   url: string;
 }
 
-// LinkedIn Page ID for ajents.company - will be fetched dynamically
-let cachedPageId: string | null = null;
+// Cached user ID for personal profile posting
+let cachedUserId: string | null = null;
 
 export async function postToLinkedIn(
   content: string,
@@ -15,8 +15,8 @@ export async function postToLinkedIn(
     throw new Error('LinkedIn access token not provided');
   }
 
-  // Get the organization/page ID
-  const pageId = await getPageId(accessToken);
+  // Get the user's person ID for personal profile posting
+  const userId = await getUserId(accessToken);
 
   const mediaAssets: string[] = [];
 
@@ -25,7 +25,7 @@ export async function postToLinkedIn(
     const imagesToUpload = imageUrls.slice(0, 9); // LinkedIn limit is 9 images
     for (const imageUrl of imagesToUpload) {
       try {
-        const mediaAsset = await uploadImage(imageUrl, pageId, accessToken);
+        const mediaAsset = await uploadImage(imageUrl, userId, accessToken);
         mediaAssets.push(mediaAsset);
       } catch (error) {
         console.error(`Failed to upload image ${imageUrl}:`, error);
@@ -34,9 +34,9 @@ export async function postToLinkedIn(
     }
   }
 
-  // Create post payload for organization page
+  // Create post payload for personal profile (using w_member_social scope)
   const postPayload: LinkedInPostPayload = {
-    author: `urn:li:organization:${pageId}`,
+    author: `urn:li:person:${userId}`,
     lifecycleState: 'PUBLISHED',
     specificContent: {
       'com.linkedin.ugc.ShareContent': {
@@ -72,57 +72,53 @@ export async function postToLinkedIn(
 
   const data = await response.json() as { id: string };
 
-  // Extract the share ID from the URN
-  const shareId = data.id.split(':').pop();
-
   return {
     id: data.id,
     url: `https://www.linkedin.com/feed/update/${data.id}`,
   };
 }
 
-async function getPageId(accessToken: string): Promise<string> {
-  if (cachedPageId) {
-    return cachedPageId;
+async function getUserId(accessToken: string): Promise<string> {
+  if (cachedUserId) {
+    return cachedUserId;
   }
 
-  // Get organizations the user is admin of
-  const response = await fetch(
-    'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&projection=(elements*(organizationalTarget~))',
-    {
+  // Get current user's profile using /userinfo endpoint (works with openid scope)
+  // or /me endpoint (works with profile scope)
+  const response = await fetch('https://api.linkedin.com/v2/userinfo', {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    // Fallback to /me endpoint if userinfo fails
+    const meResponse = await fetch('https://api.linkedin.com/v2/me', {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
       },
+    });
+
+    if (!meResponse.ok) {
+      throw new Error(`Failed to get user info: ${meResponse.status}`);
     }
-  );
 
-  if (!response.ok) {
-    throw new Error(`Failed to get organizations: ${response.status}`);
+    const meData = await meResponse.json() as { id: string };
+    cachedUserId = meData.id;
+    return cachedUserId;
   }
 
-  const data = await response.json() as {
-    elements: Array<{
-      organizationalTarget: string;
-    }>;
-  };
-
-  if (!data.elements || data.elements.length === 0) {
-    throw new Error('No LinkedIn pages found for this account');
-  }
-
-  // Extract organization ID from URN (urn:li:organization:12345)
-  const orgUrn = data.elements[0].organizationalTarget;
-  cachedPageId = orgUrn.split(':').pop() || '';
-
-  return cachedPageId;
+  const data = await response.json() as { sub: string };
+  cachedUserId = data.sub;
+  return cachedUserId;
 }
 
 async function uploadImage(
   imageUrl: string,
-  pageId: string,
+  userId: string,
   accessToken: string
 ): Promise<string> {
-  // Step 1: Register the upload
+  // Step 1: Register the upload for personal profile
   const registerResponse = await fetch(
     'https://api.linkedin.com/v2/assets?action=registerUpload',
     {
@@ -134,7 +130,7 @@ async function uploadImage(
       body: JSON.stringify({
         registerUploadRequest: {
           recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
-          owner: `urn:li:organization:${pageId}`,
+          owner: `urn:li:person:${userId}`,
           serviceRelationships: [{
             relationshipType: 'OWNER',
             identifier: 'urn:li:userGeneratedContent',

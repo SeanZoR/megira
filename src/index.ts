@@ -9,6 +9,8 @@ import {
 import { matchQuoteToContent, generateQuoteImage } from './quotes';
 import { postToX } from './publishers/x';
 import { postToLinkedIn } from './publishers/linkedin';
+import { processDraftedContent } from './processors';
+import { autoScheduleReadyContent } from './auto-scheduler';
 
 type Bindings = {
   KV: KVNamespace;
@@ -17,10 +19,16 @@ type Bindings = {
   NOTION_DATABASE_ID: string;
   NOTION_SCHEDULE_DB_ID: string;
   ANTHROPIC_API_KEY: string;
+  // X OAuth 2.0 (for tweets)
   X_CLIENT_ID: string;
   X_CLIENT_SECRET: string;
   X_ACCESS_TOKEN: string;
   X_REFRESH_TOKEN: string;
+  // X OAuth 1.0a (for media upload)
+  X_API_KEY: string;
+  X_API_KEY_SECRET: string;
+  X_ACCESS_TOKEN_OAUTH1: string;
+  X_ACCESS_TOKEN_SECRET: string;
   LINKEDIN_ACCESS_TOKEN: string;
   TIMEZONE: string;
 };
@@ -38,9 +46,21 @@ app.get('/', (c) => {
   });
 });
 
-// Manual trigger endpoint (for testing)
+// Manual trigger endpoint for publishing (for testing)
 app.post('/publish', async (c) => {
   const result = await processScheduledPosts(c.env);
+  return c.json(result);
+});
+
+// Manual trigger endpoint for processing (for testing)
+app.post('/process', async (c) => {
+  const result = await processDraftedContent(c.env);
+  return c.json(result);
+});
+
+// Manual trigger endpoint for auto-scheduling (Buffer-style queue)
+app.post('/schedule', async (c) => {
+  const result = await autoScheduleReadyContent(c.env);
   return c.json(result);
 });
 
@@ -83,30 +103,42 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
       try {
         // Collect all images to post
         const imagesToPost: string[] = [...(scheduled.content.images || [])];
+        console.log(`Content images found: ${scheduled.content.images?.length || 0}`);
 
-        // Handle quote if requested (adds to images)
+        // Handle quote image if available (pre-processed or fallback to matching at publish time)
         if (scheduled.includeQuote) {
-          const quotesData = await env.R2.get('quotes.json');
-          if (quotesData) {
-            const quotes = JSON.parse(await quotesData.text());
-            const matchedQuote = await matchQuoteToContent(
-              scheduled.content.content,
-              quotes.quotes,
-              env.ANTHROPIC_API_KEY
-            );
+          // Check if we have a pre-processed quote from the processing step
+          if (scheduled.content.matchedQuoteId) {
+            console.log(`Using pre-processed quote: ${scheduled.content.matchedQuoteId}`);
+            // Quote image should already be cached in R2 from processing
+            // For now, we'd need a public R2 URL or use inline image upload
+            // const imageKey = `images/${scheduled.content.matchedQuoteId}.png`;
+            // imagesToPost.push(imageUrl);
+          } else {
+            // Fallback: match quote at publish time (for content not yet processed)
+            console.log('No pre-processed quote, matching at publish time');
+            const quotesData = await env.R2.get('quotes.json');
+            if (quotesData) {
+              const quotes = JSON.parse(await quotesData.text());
+              const matchedQuote = await matchQuoteToContent(
+                scheduled.content.content,
+                quotes.quotes,
+                env.ANTHROPIC_API_KEY
+              );
 
-            if (matchedQuote) {
-              // Check for cached image or generate new one
-              const imageKey = `images/${matchedQuote.id}.png`;
-              let imageData = await env.R2.get(imageKey);
+              if (matchedQuote) {
+                // Check for cached image or generate new one
+                const imageKey = `images/${matchedQuote.id}.png`;
+                let imageData = await env.R2.get(imageKey);
 
-              if (!imageData) {
-                const generatedImage = await generateQuoteImage(matchedQuote);
-                await env.R2.put(imageKey, generatedImage);
+                if (!imageData) {
+                  const generatedImage = await generateQuoteImage(matchedQuote);
+                  await env.R2.put(imageKey, generatedImage);
+                }
+
+                // For now, we'd need a public R2 URL or use inline image upload
+                // imagesToPost.push(quoteImageUrl);
               }
-
-              // For now, we'd need a public R2 URL or use inline image upload
-              // imagesToPost.push(quoteImageUrl);
             }
           }
         }
@@ -115,29 +147,41 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
 
         const postUrls: { xUrl?: string; linkedInUrl?: string } = {};
 
-        // Post to X if platform includes X
-        if (scheduled.platform === 'X' || scheduled.platform === 'Both') {
+        // Post to X if platforms include X
+        if (scheduled.platforms.includes('X')) {
           try {
             const xResult = await postToX(
               scheduled.content.content,
               imagesToPost.length > 0 ? imagesToPost : undefined,
               {
+                // OAuth 2.0 (for tweets)
                 accessToken: env.X_ACCESS_TOKEN,
                 refreshToken: env.X_REFRESH_TOKEN,
                 clientId: env.X_CLIENT_ID,
                 clientSecret: env.X_CLIENT_SECRET,
-              }
+                // OAuth 1.0a (for media upload)
+                apiKey: env.X_API_KEY,
+                apiKeySecret: env.X_API_KEY_SECRET,
+                accessTokenOAuth1: env.X_ACCESS_TOKEN_OAUTH1,
+                accessTokenSecret: env.X_ACCESS_TOKEN_SECRET,
+                // KV for token persistence
+                kv: env.KV,
+              },
+              scheduled.content.replyContent // Pass reply content for thread
             );
             postUrls.xUrl = xResult.url;
             console.log(`Posted to X: ${xResult.url}`);
+            if (xResult.replyUrl) {
+              console.log(`Posted reply: ${xResult.replyUrl}`);
+            }
           } catch (xError) {
             console.error('X posting failed:', xError);
             errors.push(`X posting failed for ${scheduled.id}: ${xError}`);
           }
         }
 
-        // Post to LinkedIn if platform includes LinkedIn
-        if (scheduled.platform === 'LinkedIn' || scheduled.platform === 'Both') {
+        // Post to LinkedIn if platforms include LinkedIn
+        if (scheduled.platforms.includes('LinkedIn')) {
           try {
             const linkedInResult = await postToLinkedIn(
               scheduled.content.content,
@@ -176,11 +220,26 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
 }
 
 // Cron handler - runs every 15 minutes
+// Handles: processing (Drafted → Processed), auto-scheduling (Ready → Scheduled), publishing (Scheduled → Published)
 export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
     console.log('Cron triggered at:', new Date().toISOString());
-    ctx.waitUntil(processScheduledPosts(env));
+
+    // Run processing, auto-scheduling, and publishing in parallel
+    ctx.waitUntil(
+      Promise.all([
+        processDraftedContent(env).then((result) => {
+          console.log('Processing result:', result);
+        }),
+        autoScheduleReadyContent(env).then((result) => {
+          console.log('Auto-scheduling result:', result);
+        }),
+        processScheduledPosts(env).then((result) => {
+          console.log('Publishing result:', result);
+        }),
+      ])
+    );
   },
 };

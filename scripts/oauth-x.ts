@@ -5,7 +5,7 @@ import open from 'open';
 const CLIENT_ID = process.env.X_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.X_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:3000/callback';
-const SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'];
+const SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access', 'media.write'];
 
 // Generate PKCE challenge
 function generateCodeVerifier(): string {

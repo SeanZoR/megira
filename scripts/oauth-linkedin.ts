@@ -5,8 +5,10 @@ import open from 'open';
 const CLIENT_ID = process.env.LINKEDIN_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:3000/callback';
-// Scopes for posting to pages
-const SCOPES = ['w_member_social', 'w_organization_social', 'r_organization_social'];
+// Scopes for posting as personal profile
+// w_member_social - post as member
+// openid + profile - get user info from /userinfo endpoint
+const SCOPES = ['openid', 'profile', 'w_member_social'];
 
 async function main() {
   const state = crypto.randomBytes(16).toString('hex');

@@ -7,7 +7,15 @@ interface NotionPost {
   status: string;
   includeQuote: boolean;
   quoteOverride?: string;
+  matchedQuoteId?: string;
+  processingLog?: string;
+  platforms?: string[]; // X, LinkedIn, or both
+  replyContent?: string; // Content for first reply (X thread)
+  immediateSchedule?: boolean; // If true, schedule for immediate publishing
 }
+
+// Export the type for use in processors
+export type { NotionPost };
 
 // Notion block types we care about
 interface NotionBlock {
@@ -33,7 +41,7 @@ interface ScheduledPost {
   id: string;
   contentId: string;
   scheduledFor: Date;
-  platform: 'X' | 'LinkedIn' | 'Both';
+  platforms: string[]; // ['X'], ['LinkedIn'], or ['X', 'LinkedIn']
   status: 'Scheduled' | 'Publishing' | 'Published' | 'Failed';
   includeQuote: boolean;
   content?: NotionPost; // Populated from linked content
@@ -103,11 +111,14 @@ export async function getScheduledPosts(
     const content = await getContentById(notionToken, contentRelation);
     if (!content) continue;
 
+    // Get platforms from multi_select (defaults to both if empty)
+    const platforms = props['Platform']?.multi_select?.map((p: any) => p.name) || ['X', 'LinkedIn'];
+
     scheduledPosts.push({
       id: page.id,
       contentId: contentRelation,
       scheduledFor: new Date(props['Scheduled For']?.date?.start || ''),
-      platform: props['Platform']?.select?.name || 'Both',
+      platforms,
       status: props['Status']?.select?.name || 'Scheduled',
       includeQuote: props['Include Quote']?.checkbox || false,
       content,
@@ -229,20 +240,26 @@ async function getContentById(
   const page = await response.json() as NotionPage;
   const props = page.properties;
 
-  // Fetch page body content (blocks) for text and images
+  // Fetch page body for images only
   const pageContent = await getPageBlocks(notionToken, pageId);
 
-  // Use page body content if available, fallback to Content property
-  const content = pageContent.text || props.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+  // Content comes from the Content property field
+  const content = props.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+
+  // Reply content for first reply (X threads)
+  const replyContent = props['Reply Content']?.rich_text?.map((t: any) => t.plain_text).join('') || undefined;
 
   return {
     id: page.id,
     title: props.Title?.title?.[0]?.plain_text || '',
     content,
-    images: pageContent.images,
-    status: props.Status?.select?.name || '',
+    images: pageContent.images, // Images still come from page body
+    status: props.Status?.status?.name || '',
     includeQuote: props['Include Quote']?.checkbox || false,
     quoteOverride: props['Quote Override']?.rich_text?.[0]?.plain_text,
+    matchedQuoteId: props['Matched Quote ID']?.rich_text?.[0]?.plain_text,
+    processingLog: props['Processing Log']?.rich_text?.[0]?.plain_text,
+    replyContent,
   };
 }
 
@@ -331,7 +348,7 @@ export async function markContentPublished(
       },
       body: JSON.stringify({
         properties: {
-          'Status': { select: { name: 'Published' } },
+          'Status': { status: { name: 'Published' } },
         },
       }),
     }
@@ -359,7 +376,7 @@ export async function getReadyPosts(
       body: JSON.stringify({
         filter: {
           property: 'Status',
-          select: { equals: 'Ready' },
+          status: { equals: 'Ready' },
         },
       }),
     }
@@ -371,20 +388,22 @@ export async function getReadyPosts(
 
   const data = await response.json() as { results: NotionPage[] };
 
-  // Fetch page blocks for each post to get content and images
+  // Fetch page blocks for each post to get images
   const posts: NotionPost[] = [];
   for (const page of data.results) {
     const pageContent = await getPageBlocks(notionToken, page.id);
-    const content = pageContent.text || page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+    const content = page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+    const replyContent = page.properties['Reply Content']?.rich_text?.map((t: any) => t.plain_text).join('') || undefined;
 
     posts.push({
       id: page.id,
       title: page.properties.Title?.title?.[0]?.plain_text || '',
       content,
       images: pageContent.images,
-      status: page.properties.Status?.select?.name || '',
+      status: page.properties.Status?.status?.name || '',
       includeQuote: page.properties['Include Quote']?.checkbox || false,
       quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
+      replyContent,
     });
   }
 
@@ -413,7 +432,7 @@ export async function markAsPublished(
       },
       body: JSON.stringify({
         properties: {
-          'Status': { select: { name: 'Published' } },
+          'Status': { status: { name: 'Published' } },
           'Published At': { date: { start: new Date().toISOString() } },
           'Post URLs': {
             rich_text: [{ type: 'text', text: { content: postUrls } }],
@@ -422,4 +441,323 @@ export async function markAsPublished(
       }),
     }
   );
+}
+
+// ============================================
+// Processing-related functions (new workflow)
+// ============================================
+
+// Get content with "Drafted" status for processing
+export async function getDraftedContent(
+  notionToken: string,
+  databaseId: string
+): Promise<NotionPost[]> {
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${databaseId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          property: 'Status',
+          status: { equals: 'Drafted' },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Notion API error: ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json() as { results: NotionPage[] };
+
+  const posts: NotionPost[] = [];
+  for (const page of data.results) {
+    const pageContent = await getPageBlocks(notionToken, page.id);
+    const content = page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+    const replyContent = page.properties['Reply Content']?.rich_text?.map((t: any) => t.plain_text).join('') || undefined;
+
+    posts.push({
+      id: page.id,
+      title: page.properties.Title?.title?.[0]?.plain_text || '',
+      content,
+      images: pageContent.images,
+      status: page.properties.Status?.status?.name || '',
+      includeQuote: page.properties['Include Quote']?.checkbox || false,
+      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
+      matchedQuoteId: page.properties['Matched Quote ID']?.rich_text?.[0]?.plain_text,
+      processingLog: page.properties['Processing Log']?.rich_text?.[0]?.plain_text,
+      replyContent,
+    });
+  }
+
+  return posts;
+}
+
+// Helper to update content page properties
+async function updateContentPage(
+  notionToken: string,
+  pageId: string,
+  properties: Record<string, any>
+): Promise<void> {
+  const response = await fetch(
+    `https://api.notion.com/v1/pages/${pageId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ properties }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to update content: ${response.status}`);
+  }
+}
+
+// Mark content as "Processing" (prevents double-processing)
+export async function markContentProcessing(
+  notionToken: string,
+  contentId: string
+): Promise<void> {
+  await updateContentPage(notionToken, contentId, {
+    'Status': { status: { name: 'Processing' } },
+  });
+}
+
+// Mark content as "Processed" with log and results
+export async function markContentProcessed(
+  notionToken: string,
+  contentId: string,
+  processingLog: string,
+  results: Record<string, any>
+): Promise<void> {
+  const properties: Record<string, any> = {
+    'Status': { status: { name: 'Processed' } },
+    'Processing Log': {
+      rich_text: [{ type: 'text', text: { content: processingLog.substring(0, 2000) } }],
+    },
+    'Processed At': { date: { start: new Date().toISOString() } },
+  };
+
+  // Store matched quote ID if present
+  if (results.quote?.data?.quoteId) {
+    properties['Matched Quote ID'] = {
+      rich_text: [{ type: 'text', text: { content: results.quote.data.quoteId } }],
+    };
+  }
+
+  await updateContentPage(notionToken, contentId, properties);
+}
+
+// Mark content processing as failed (keeps in Processing for retry)
+export async function markContentProcessingFailed(
+  notionToken: string,
+  contentId: string,
+  error: string
+): Promise<void> {
+  await updateContentPage(notionToken, contentId, {
+    // Keep in Processing status - user can move back to Drafted to retry
+    'Processing Log': {
+      rich_text: [{ type: 'text', text: { content: `ERROR: ${error.substring(0, 1990)}` } }],
+    },
+  });
+}
+
+// Mark content as "Scheduled" (when linked to Schedule DB entry)
+export async function markContentScheduled(
+  notionToken: string,
+  contentId: string
+): Promise<void> {
+  await updateContentPage(notionToken, contentId, {
+    'Status': { status: { name: 'Scheduled' } },
+  });
+}
+
+// ============================================
+// Auto-scheduling functions (Buffer-style queue)
+// ============================================
+
+// Get content with "Ready" status that doesn't have a schedule entry yet
+export async function getReadyContentWithoutSchedule(
+  notionToken: string,
+  contentDbId: string,
+  scheduleDbId: string
+): Promise<NotionPost[]> {
+  // First get all Ready content
+  const readyResponse = await fetch(
+    `https://api.notion.com/v1/databases/${contentDbId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          property: 'Status',
+          status: { equals: 'Ready' },
+        },
+      }),
+    }
+  );
+
+  if (!readyResponse.ok) {
+    throw new Error(`Notion API error: ${readyResponse.status}`);
+  }
+
+  const readyData = await readyResponse.json() as { results: NotionPage[] };
+
+  // Get all non-published schedule entries to find which content is already scheduled
+  const scheduleResponse = await fetch(
+    `https://api.notion.com/v1/databases/${scheduleDbId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          or: [
+            { property: 'Status', select: { equals: 'Scheduled' } },
+            { property: 'Status', select: { equals: 'Publishing' } },
+          ],
+        },
+      }),
+    }
+  );
+
+  const scheduledContentIds = new Set<string>();
+  if (scheduleResponse.ok) {
+    const scheduleData = await scheduleResponse.json() as { results: NotionPage[] };
+    for (const entry of scheduleData.results) {
+      const contentId = entry.properties['Content']?.relation?.[0]?.id;
+      if (contentId) {
+        scheduledContentIds.add(contentId);
+      }
+    }
+  }
+
+  // Filter to only Ready content without an existing schedule
+  const unscheduledContent: NotionPost[] = [];
+  for (const page of readyData.results) {
+    if (scheduledContentIds.has(page.id)) continue;
+
+    const pageContent = await getPageBlocks(notionToken, page.id);
+    const content = page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
+    const replyContent = page.properties['Reply Content']?.rich_text?.map((t: any) => t.plain_text).join('') || undefined;
+
+    unscheduledContent.push({
+      id: page.id,
+      title: page.properties.Title?.title?.[0]?.plain_text || '',
+      content,
+      images: pageContent.images,
+      status: page.properties.Status?.status?.name || '',
+      includeQuote: page.properties['Include Quote']?.checkbox || false,
+      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
+      matchedQuoteId: page.properties['Matched Quote ID']?.rich_text?.[0]?.plain_text,
+      processingLog: page.properties['Processing Log']?.rich_text?.[0]?.plain_text,
+      platforms: page.properties['Platforms']?.multi_select?.map((p: any) => p.name) || [],
+      replyContent,
+      immediateSchedule: page.properties['Immediate schedule?']?.checkbox || false,
+    });
+  }
+
+  return unscheduledContent;
+}
+
+// Get all scheduled times to avoid conflicts (Buffer-style)
+export async function getScheduledTimes(
+  notionToken: string,
+  scheduleDbId: string
+): Promise<Date[]> {
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${scheduleDbId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          property: 'Status',
+          select: { equals: 'Scheduled' },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) return [];
+
+  const data = await response.json() as { results: NotionPage[] };
+  return data.results
+    .map((entry) => entry.properties['Scheduled For']?.date?.start)
+    .filter((date): date is string => !!date)
+    .map((date) => new Date(date));
+}
+
+// Create a schedule entry for content
+export async function createScheduleEntry(
+  notionToken: string,
+  scheduleDbId: string,
+  contentId: string,
+  contentTitle: string,
+  scheduledFor: Date,
+  platforms: string[], // ['X'], ['LinkedIn'], or ['X', 'LinkedIn']
+  includeQuote: boolean
+): Promise<string> {
+  const response = await fetch(
+    'https://api.notion.com/v1/pages',
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        parent: { database_id: scheduleDbId },
+        properties: {
+          'Name': {
+            title: [{ text: { content: contentTitle.substring(0, 100) } }],
+          },
+          'Content': {
+            relation: [{ id: contentId }],
+          },
+          'Scheduled For': {
+            date: { start: scheduledFor.toISOString() },
+          },
+          'Platform': {
+            multi_select: platforms.map(p => ({ name: p })),
+          },
+          'Status': {
+            select: { name: 'Scheduled' },
+          },
+          'Include Quote': {
+            checkbox: includeQuote,
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to create schedule: ${response.status}`);
+  }
+
+  const data = await response.json() as { id: string };
+  return data.id;
 }
