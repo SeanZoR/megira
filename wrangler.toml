@@ -9,17 +9,12 @@ crons = ["*/10 * * * *"]  # Every 10 minutes
 binding = "KV"
 id = "c0093bcc001d4ee49705841c71329939"
 
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "megira-quotes"
-
 [vars]
 TIMEZONE = "Asia/Jerusalem"
 
 # Secrets (set via wrangler secret put):
 # - NOTION_TOKEN
 # - NOTION_DATABASE_ID
-# - ANTHROPIC_API_KEY
 # - X_CLIENT_ID
 # - X_CLIENT_SECRET
 # - X_ACCESS_TOKEN

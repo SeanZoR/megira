@@ -1,12 +1,11 @@
 {
   "name": "megira",
-  "version": "1.0.0",
-  "description": "חלומות במגירה - Publish your Notion content to LinkedIn & X with AI-matched quotes",
+  "version": "2.0.0",
+  "description": "חלומות במגירה - Publish your Notion content to LinkedIn & X",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "prepare-quotes": "npx tsx scripts/prepare-quotes.ts",
     "oauth:x": "npx tsx scripts/oauth-x.ts",
     "oauth:linkedin": "npx tsx scripts/oauth-linkedin.ts"
   },
@@ -17,8 +16,7 @@
     "x",
     "social-media",
     "automation",
-    "cloudflare-workers",
-    "quotes"
+    "cloudflare-workers"
   ],
   "author": "Sean Katz",
   "license": "MIT",

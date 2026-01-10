@@ -9,19 +9,15 @@ import {
   deleteScheduleEntry,
   markContentReady,
 } from './notion';
-import { matchQuoteToContent, generateQuoteImage } from './quotes';
 import { postToX } from './publishers/x';
 import { postToLinkedIn } from './publishers/linkedin';
-import { processDraftedContent } from './processors';
 import { autoScheduleReadyContent } from './auto-scheduler';
 
 type Bindings = {
   KV: KVNamespace;
-  R2: R2Bucket;
   NOTION_TOKEN: string;
   NOTION_DATABASE_ID: string;
   NOTION_SCHEDULE_DB_ID: string;
-  ANTHROPIC_API_KEY: string;
   // X OAuth 2.0 (for tweets)
   X_CLIENT_ID: string;
   X_CLIENT_SECRET: string;
@@ -52,12 +48,6 @@ app.get('/', (c) => {
 // Manual trigger endpoint for publishing (for testing)
 app.post('/publish', async (c) => {
   const result = await processScheduledPosts(c.env);
-  return c.json(result);
-});
-
-// Manual trigger endpoint for processing (for testing)
-app.post('/process', async (c) => {
-  const result = await processDraftedContent(c.env);
   return c.json(result);
 });
 
@@ -107,7 +97,6 @@ app.get('/status', async (c) => {
     timezone: c.env.TIMEZONE,
     hasXToken: !!c.env.X_ACCESS_TOKEN && c.env.X_ACCESS_TOKEN !== 'placeholder',
     hasLinkedInToken: !!c.env.LINKEDIN_ACCESS_TOKEN && c.env.LINKEDIN_ACCESS_TOKEN !== 'placeholder',
-    hasAnthropicKey: !!c.env.ANTHROPIC_API_KEY && c.env.ANTHROPIC_API_KEY !== 'placeholder',
   });
 });
 
@@ -138,47 +127,7 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
       try {
         // Collect all images to post
         const imagesToPost: string[] = [...(scheduled.content.images || [])];
-        console.log(`Content images found: ${scheduled.content.images?.length || 0}`);
-
-        // Handle quote image if available (pre-processed or fallback to matching at publish time)
-        if (scheduled.includeQuote) {
-          // Check if we have a pre-processed quote from the processing step
-          if (scheduled.content.matchedQuoteId) {
-            console.log(`Using pre-processed quote: ${scheduled.content.matchedQuoteId}`);
-            // Quote image should already be cached in R2 from processing
-            // For now, we'd need a public R2 URL or use inline image upload
-            // const imageKey = `images/${scheduled.content.matchedQuoteId}.png`;
-            // imagesToPost.push(imageUrl);
-          } else {
-            // Fallback: match quote at publish time (for content not yet processed)
-            console.log('No pre-processed quote, matching at publish time');
-            const quotesData = await env.R2.get('quotes.json');
-            if (quotesData) {
-              const quotes = JSON.parse(await quotesData.text());
-              const matchedQuote = await matchQuoteToContent(
-                scheduled.content.content,
-                quotes.quotes,
-                env.ANTHROPIC_API_KEY
-              );
-
-              if (matchedQuote) {
-                // Check for cached image or generate new one
-                const imageKey = `images/${matchedQuote.id}.png`;
-                let imageData = await env.R2.get(imageKey);
-
-                if (!imageData) {
-                  const generatedImage = await generateQuoteImage(matchedQuote);
-                  await env.R2.put(imageKey, generatedImage);
-                }
-
-                // For now, we'd need a public R2 URL or use inline image upload
-                // imagesToPost.push(quoteImageUrl);
-              }
-            }
-          }
-        }
-
-        console.log(`Post has ${imagesToPost.length} inline images`);
+        console.log(`Post has ${imagesToPost.length} images`);
 
         const postUrls: { xUrl?: string; linkedInUrl?: string } = {};
 
@@ -254,20 +203,17 @@ async function processScheduledPosts(env: Bindings): Promise<{ processed: number
   return { processed, errors };
 }
 
-// Cron handler - runs every 15 minutes
-// Handles: processing (Drafted → Processed), auto-scheduling (Ready → Scheduled), publishing (Scheduled → Published)
+// Cron handler - runs every 10 minutes
+// Handles: auto-scheduling (Ready → Scheduled), publishing (Scheduled → Published)
 export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
     console.log('Cron triggered at:', new Date().toISOString());
 
-    // Run processing, auto-scheduling, and publishing in parallel
+    // Run auto-scheduling and publishing in parallel
     ctx.waitUntil(
       Promise.all([
-        processDraftedContent(env).then((result) => {
-          console.log('Processing result:', result);
-        }),
         autoScheduleReadyContent(env).then((result) => {
           console.log('Auto-scheduling result:', result);
         }),

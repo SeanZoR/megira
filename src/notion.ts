@@ -5,10 +5,6 @@ interface NotionPost {
   content: string;
   images: string[]; // Inline images from page body
   status: string;
-  includeQuote: boolean;
-  quoteOverride?: string;
-  matchedQuoteId?: string;
-  processingLog?: string;
   platforms?: string[]; // X, LinkedIn, or both
   replyContent?: string; // Content for first reply (X thread)
   immediateSchedule?: boolean; // If true, schedule for immediate publishing
@@ -43,7 +39,6 @@ interface ScheduledPost {
   scheduledFor: Date;
   platforms: string[]; // ['X'], ['LinkedIn'], or ['X', 'LinkedIn']
   status: 'Scheduled' | 'Publishing' | 'Published' | 'Failed';
-  includeQuote: boolean;
   content?: NotionPost; // Populated from linked content
 }
 
@@ -120,7 +115,6 @@ export async function getScheduledPosts(
       scheduledFor: new Date(props['Scheduled For']?.date?.start || ''),
       platforms,
       status: props['Status']?.select?.name || 'Scheduled',
-      includeQuote: props['Include Quote']?.checkbox || false,
       content,
     });
   }
@@ -255,10 +249,6 @@ async function getContentById(
     content,
     images: pageContent.images, // Images still come from page body
     status: props.Status?.status?.name || '',
-    includeQuote: props['Include Quote']?.checkbox || false,
-    quoteOverride: props['Quote Override']?.rich_text?.[0]?.plain_text,
-    matchedQuoteId: props['Matched Quote ID']?.rich_text?.[0]?.plain_text,
-    processingLog: props['Processing Log']?.rich_text?.[0]?.plain_text,
     replyContent,
   };
 }
@@ -401,8 +391,6 @@ export async function getReadyPosts(
       content,
       images: pageContent.images,
       status: page.properties.Status?.status?.name || '',
-      includeQuote: page.properties['Include Quote']?.checkbox || false,
-      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
       replyContent,
     });
   }
@@ -443,62 +431,6 @@ export async function markAsPublished(
   );
 }
 
-// ============================================
-// Processing-related functions (new workflow)
-// ============================================
-
-// Get content with "Drafted" status for processing
-export async function getDraftedContent(
-  notionToken: string,
-  databaseId: string
-): Promise<NotionPost[]> {
-  const response = await fetch(
-    `https://api.notion.com/v1/databases/${databaseId}/query`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${notionToken}`,
-        'Notion-Version': '2022-06-28',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        filter: {
-          property: 'Status',
-          status: { equals: 'Drafted' },
-        },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Notion API error: ${response.status} ${await response.text()}`);
-  }
-
-  const data = await response.json() as { results: NotionPage[] };
-
-  const posts: NotionPost[] = [];
-  for (const page of data.results) {
-    const pageContent = await getPageBlocks(notionToken, page.id);
-    const content = page.properties.Content?.rich_text?.map((t: any) => t.plain_text).join('') || '';
-    const replyContent = page.properties['Reply Content']?.rich_text?.map((t: any) => t.plain_text).join('') || undefined;
-
-    posts.push({
-      id: page.id,
-      title: page.properties.Title?.title?.[0]?.plain_text || '',
-      content,
-      images: pageContent.images,
-      status: page.properties.Status?.status?.name || '',
-      includeQuote: page.properties['Include Quote']?.checkbox || false,
-      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
-      matchedQuoteId: page.properties['Matched Quote ID']?.rich_text?.[0]?.plain_text,
-      processingLog: page.properties['Processing Log']?.rich_text?.[0]?.plain_text,
-      replyContent,
-    });
-  }
-
-  return posts;
-}
-
 // Helper to update content page properties
 async function updateContentPage(
   notionToken: string,
@@ -521,55 +453,6 @@ async function updateContentPage(
   if (!response.ok) {
     throw new Error(`Failed to update content: ${response.status}`);
   }
-}
-
-// Mark content as "Processing" (prevents double-processing)
-export async function markContentProcessing(
-  notionToken: string,
-  contentId: string
-): Promise<void> {
-  await updateContentPage(notionToken, contentId, {
-    'Status': { status: { name: 'Processing' } },
-  });
-}
-
-// Mark content as "Processed" with log and results
-export async function markContentProcessed(
-  notionToken: string,
-  contentId: string,
-  processingLog: string,
-  results: Record<string, any>
-): Promise<void> {
-  const properties: Record<string, any> = {
-    'Status': { status: { name: 'Processed' } },
-    'Processing Log': {
-      rich_text: [{ type: 'text', text: { content: processingLog.substring(0, 2000) } }],
-    },
-    'Processed At': { date: { start: new Date().toISOString() } },
-  };
-
-  // Store matched quote ID if present
-  if (results.quote?.data?.quoteId) {
-    properties['Matched Quote ID'] = {
-      rich_text: [{ type: 'text', text: { content: results.quote.data.quoteId } }],
-    };
-  }
-
-  await updateContentPage(notionToken, contentId, properties);
-}
-
-// Mark content processing as failed (keeps in Processing for retry)
-export async function markContentProcessingFailed(
-  notionToken: string,
-  contentId: string,
-  error: string
-): Promise<void> {
-  await updateContentPage(notionToken, contentId, {
-    // Keep in Processing status - user can move back to Drafted to retry
-    'Processing Log': {
-      rich_text: [{ type: 'text', text: { content: `ERROR: ${error.substring(0, 1990)}` } }],
-    },
-  });
 }
 
 // Mark content as "Scheduled" (when linked to Schedule DB entry)
@@ -664,10 +547,6 @@ export async function getReadyContentWithoutSchedule(
       content,
       images: pageContent.images,
       status: page.properties.Status?.status?.name || '',
-      includeQuote: page.properties['Include Quote']?.checkbox || false,
-      quoteOverride: page.properties['Quote Override']?.rich_text?.[0]?.plain_text,
-      matchedQuoteId: page.properties['Matched Quote ID']?.rich_text?.[0]?.plain_text,
-      processingLog: page.properties['Processing Log']?.rich_text?.[0]?.plain_text,
       platforms: page.properties['Platforms']?.multi_select?.map((p: any) => p.name) || [],
       replyContent,
       immediateSchedule: page.properties['Immediate schedule?']?.checkbox || false,
@@ -716,8 +595,7 @@ export async function createScheduleEntry(
   contentId: string,
   contentTitle: string,
   scheduledFor: Date,
-  platforms: string[], // ['X'], ['LinkedIn'], or ['X', 'LinkedIn']
-  includeQuote: boolean
+  platforms: string[] // ['X'], ['LinkedIn'], or ['X', 'LinkedIn']
 ): Promise<string> {
   const response = await fetch(
     'https://api.notion.com/v1/pages',
@@ -745,9 +623,6 @@ export async function createScheduleEntry(
           },
           'Status': {
             select: { name: 'Scheduled' },
-          },
-          'Include Quote': {
-            checkbox: includeQuote,
           },
         },
       }),

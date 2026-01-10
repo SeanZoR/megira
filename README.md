@@ -2,85 +2,68 @@
 
 > חלומות במגירה - Taking your dreams out of the drawer
 
-**megira** is an open-source tool that automatically publishes your Notion content to LinkedIn and X (Twitter), with optional AI-matched quotes from your personal library.
+**megira** publishes your Notion content to LinkedIn and X (Twitter) automatically.
+
+## How It Works
+
+```
+Notion (Ready) → Scheduler → Publisher → X & LinkedIn
+```
+
+**Status Flow:** `Idea` → `Ready` → `Scheduled` → `Published`
+
+1. Write content in Notion with status `Idea`
+2. When ready, change status to `Ready`
+3. Scheduler picks it up and queues it for optimal posting times
+4. Publisher posts to X and/or LinkedIn
+5. Status becomes `Published` with links to the posts
 
 ## Features
 
-- 📝 **Notion Integration** - Monitor a Notion database for posts ready to publish
-- 🐦 **X/Twitter Publishing** - Post to X via API with media support
-- 💼 **LinkedIn Pages** - Post to your LinkedIn company page
-- 📚 **Quote Matching** - AI-powered quote matching from your Kindle highlights
-- 🖼️ **Quote Images** - Auto-generated quote images to attach to posts
-- ⏰ **Smart Scheduling** - Posts at optimal times for your timezone
-- ☁️ **Cloudflare Workers** - Serverless, runs on cron every 15 minutes
-
-## Architecture
-
-```
-┌─────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│   Notion    │────▶│ Cloudflare Worker  │────▶│   X API         │
-│  Database   │     │  (Cron: every 15m) │     │   LinkedIn API  │
-└─────────────┘     └────────────────────┘     └─────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌────────────────┐ ┌──────────┐ ┌────────────────┐
-     │ Cloudflare KV  │ │   R2     │ │  Claude API    │
-     │ (queue + IDs)  │ │ (quotes) │ │ (quote match)  │
-     └────────────────┘ └──────────┘ └────────────────┘
-```
+- **Notion-driven** - Your content database is the source of truth
+- **Adaptive scheduling** - Maintains a 7-day buffer, slows down when low on content
+- **Optimal times** - Posts at 08:03, 12:35, 15:43, 17:30 (Israel time) with slight randomness
+- **Multi-platform** - X (Twitter) and LinkedIn support
+- **Thread support** - X threads via Reply Content field
+- **Immediate mode** - Check "Immediate schedule?" to bypass the queue
 
 ## Setup
 
-### 1. Clone and Install
+### 1. Notion Databases
+
+**Content Database:**
+- Title (title)
+- Content (rich_text) - main post body
+- Status (status) - Idea, Ready, Scheduled, Published
+- Platforms (multi_select) - X, LinkedIn
+- Reply Content (rich_text) - optional, for X threads
+- Immediate schedule? (checkbox)
+
+**Schedule Database:**
+- Name (title)
+- Content (relation) - links to Content DB
+- Scheduled For (date)
+- Platform (multi_select)
+- Status (select) - Scheduled, Publishing, Published, Failed
+- X Post URL (url)
+- LinkedIn Post URL (url)
+
+### 2. API Setup
 
 ```bash
-git clone https://github.com/SeanZoR/megira.git
-cd megira
-npm install
+# X OAuth
+npm run oauth:x
+
+# LinkedIn OAuth
+npm run oauth:linkedin
 ```
 
-### 2. Notion Database
-
-Create a Notion database with these properties:
-- **Title** (title) - Post title/hook
-- **Content** (rich text) - Main content body
-- **Status** (select) - Options: `Idea`, `Draft`, `Compose`, `Ready`, `Published`
-- **Include Quote** (checkbox) - Attach a quote image
-- **Quote Override** (text) - Specific quote to use
-- **Published At** (date) - Auto-filled when published
-- **Post URLs** (text) - Links to published posts
-
-Create a [Notion integration](https://www.notion.so/my-integrations) and share the database with it.
-
-### 3. Social API Setup
-
-#### X (Twitter)
-1. Create an app at [developer.twitter.com](https://developer.twitter.com)
-2. Enable OAuth 2.0 with PKCE
-3. Run the OAuth flow: `npm run oauth:x`
-
-#### LinkedIn
-1. Create an app at [linkedin.com/developers](https://www.linkedin.com/developers)
-2. Request `w_member_social` and `w_organization_social` permissions
-3. Run the OAuth flow: `npm run oauth:linkedin`
-
-### 4. Prepare Quotes (Optional)
-
-If you have Kindle highlights exported as markdown:
-
-```bash
-npm run prepare-quotes
-```
-
-This parses your highlights and uploads them to R2.
-
-### 5. Configure Secrets
+### 3. Secrets
 
 ```bash
 wrangler secret put NOTION_TOKEN
 wrangler secret put NOTION_DATABASE_ID
-wrangler secret put ANTHROPIC_API_KEY
+wrangler secret put NOTION_SCHEDULE_DB_ID
 wrangler secret put X_CLIENT_ID
 wrangler secret put X_CLIENT_SECRET
 wrangler secret put X_ACCESS_TOKEN
@@ -88,44 +71,22 @@ wrangler secret put X_REFRESH_TOKEN
 wrangler secret put LINKEDIN_ACCESS_TOKEN
 ```
 
-### 6. Deploy
+### 4. Deploy
 
 ```bash
 npm run deploy
 ```
 
-## Usage
+## Endpoints
 
-1. Add ideas to your Notion database with status `Idea`
-2. When ready to publish, change status to `Ready`
-3. The worker picks it up on the next cron run (every 15 min)
-4. Posts are published at optimal times for Tel Aviv timezone
-5. Status changes to `Published` with links to the posts
-
-## Development
-
-```bash
-# Run locally
-npm run dev
-
-# Deploy
-npm run deploy
-
-# View logs
-wrangler tail
-```
-
-## Optimal Posting Times (Tel Aviv)
-
-| Platform | Best Times (Local) |
-|----------|-------------------|
-| LinkedIn | 7-8 AM, 12 PM, 5-6 PM |
-| X/Twitter | 9 AM, 12 PM, 5 PM |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Health check |
+| `GET /status` | Config status |
+| `POST /schedule` | Trigger scheduling |
+| `POST /publish` | Trigger publishing |
+| `POST /reschedule` | Clear and reschedule all pending |
 
 ## License
 
-MIT © Sean Katz
-
----
-
-*megira (מגירה) means "drawer" in Hebrew. This tool helps you take your dreams out of the drawer and share them with the world.*
+MIT

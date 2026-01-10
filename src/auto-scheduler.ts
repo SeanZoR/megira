@@ -140,8 +140,7 @@ export async function autoScheduleReadyContent(
           content.id,
           content.title || 'Untitled',
           now,
-          platforms,
-          content.includeQuote
+          platforms
         );
 
         await markContentScheduled(env.NOTION_TOKEN, content.id);
@@ -195,8 +194,7 @@ export async function autoScheduleReadyContent(
             content.id,
             content.title || 'Untitled',
             slot,
-            platforms,
-            content.includeQuote
+            platforms
           );
 
           await markContentScheduled(env.NOTION_TOKEN, content.id);
