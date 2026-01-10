@@ -29,6 +29,38 @@ Notion (Ready) → Scheduler → Publisher → X & LinkedIn
 
 ## Setup
 
+### Automated Setup with Claude Code
+
+Run Claude Code with browser automation enabled:
+
+```bash
+claude --chrome
+```
+
+Then paste this prompt:
+
+```
+Help me set up megira for publishing my Notion content to X and LinkedIn.
+
+I need you to:
+1. Create two Notion databases (Content and Schedule) with the required fields
+2. Set up a Cloudflare Worker with KV storage
+3. Run the OAuth flows for X and LinkedIn APIs
+4. Configure all the wrangler secrets
+5. Deploy the worker
+
+My preferences:
+- Timezone: [YOUR_TIMEZONE, e.g., "America/New_York"]
+- Posting times: [OPTIONAL - default is 08:03, 12:35, 15:43, 17:30]
+
+Please guide me through each step, creating the Notion databases via browser
+and helping me obtain the necessary API credentials.
+```
+
+---
+
+### Manual Setup
+
 ### 1. Notion Databases
 
 **Content Database:**
