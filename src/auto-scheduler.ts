@@ -20,6 +20,15 @@ function getRandomMinuteOffset(): number {
   return Math.floor(Math.random() * 13); // 0 to 12
 }
 
+// Buffer-based pacing: calculate slots per day to maintain 7-day buffer
+// Evaluated fresh on every run based on current queue depth
+const MIN_BUFFER_DAYS = 7;
+
+function calculateSlotsPerDay(readyPostCount: number): number {
+  const optimalSlots = Math.floor(readyPostCount / MIN_BUFFER_DAYS);
+  return Math.max(1, Math.min(4, optimalSlots)); // Clamp between 1 and 4
+}
+
 interface Bindings {
   NOTION_TOKEN: string;
   NOTION_DATABASE_ID: string;
@@ -29,19 +38,23 @@ interface Bindings {
 
 /**
  * Get all available time slots for the next 14 days
- * 4 slots per day, every day, with slight randomness in timing
+ * Uses only first N slots per day based on buffer-based pacing
  */
 function getAvailableSlots(
   timezone: string,
   takenTimes: Date[],
+  slotsPerDay: number,
   daysAhead: number = 14
 ): Date[] {
   const now = new Date();
   const slots: Date[] = [];
 
+  // Use only first N slots based on pacing calculation
+  const activeSlots = OPTIMAL_SLOTS.slice(0, slotsPerDay);
+
   // Generate slots for the next N days
   for (let day = 0; day < daysAhead; day++) {
-    for (const slot of OPTIMAL_SLOTS) {
+    for (const slot of activeSlots) {
       // Create date in Israel timezone
       const localNow = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
       const slotDate = new Date(localNow);
@@ -150,8 +163,14 @@ export async function autoScheduleReadyContent(
         env.NOTION_SCHEDULE_DB_ID
       );
 
-      // Get available slots
-      const availableSlots = getAvailableSlots(env.TIMEZONE, takenTimes);
+      // Calculate pacing based on queue depth (evaluated fresh each run)
+      const slotsPerDay = calculateSlotsPerDay(regularContent.length);
+      console.log(
+        `Buffer pacing: ${regularContent.length} posts → ${slotsPerDay} slot(s)/day to maintain ${MIN_BUFFER_DAYS}-day buffer`
+      );
+
+      // Get available slots with adaptive pacing
+      const availableSlots = getAvailableSlots(env.TIMEZONE, takenTimes, slotsPerDay);
 
       if (availableSlots.length === 0 && regularContent.length > 0) {
         errors.push('No available time slots in the next 14 days');
