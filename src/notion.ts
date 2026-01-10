@@ -761,3 +761,79 @@ export async function createScheduleEntry(
   const data = await response.json() as { id: string };
   return data.id;
 }
+
+// Get all pending scheduled entries (for rescheduling)
+export async function getPendingScheduleEntries(
+  notionToken: string,
+  scheduleDbId: string
+): Promise<Array<{ scheduleId: string; contentId: string }>> {
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${scheduleDbId}/query`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filter: {
+          property: 'Status',
+          select: { equals: 'Scheduled' },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) return [];
+
+  const data = await response.json() as { results: NotionPage[] };
+  return data.results
+    .map((entry) => ({
+      scheduleId: entry.id,
+      contentId: entry.properties['Content']?.relation?.[0]?.id,
+    }))
+    .filter((e): e is { scheduleId: string; contentId: string } => !!e.contentId);
+}
+
+// Delete (archive) a schedule entry
+export async function deleteScheduleEntry(
+  notionToken: string,
+  scheduleId: string
+): Promise<void> {
+  await fetch(
+    `https://api.notion.com/v1/pages/${scheduleId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ archived: true }),
+    }
+  );
+}
+
+// Reset content status back to Ready (for rescheduling)
+export async function markContentReady(
+  notionToken: string,
+  contentId: string
+): Promise<void> {
+  await fetch(
+    `https://api.notion.com/v1/pages/${contentId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        properties: {
+          'Status': { status: { name: 'Ready' } },
+        },
+      }),
+    }
+  );
+}

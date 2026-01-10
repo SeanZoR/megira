@@ -5,6 +5,9 @@ import {
   markSchedulePublished,
   markScheduleFailed,
   markContentPublished,
+  getPendingScheduleEntries,
+  deleteScheduleEntry,
+  markContentReady,
 } from './notion';
 import { matchQuoteToContent, generateQuoteImage } from './quotes';
 import { postToX } from './publishers/x';
@@ -62,6 +65,38 @@ app.post('/process', async (c) => {
 app.post('/schedule', async (c) => {
   const result = await autoScheduleReadyContent(c.env);
   return c.json(result);
+});
+
+// Reschedule: clear pending schedules and re-queue with adaptive pacing
+app.post('/reschedule', async (c) => {
+  const errors: string[] = [];
+
+  // Get all pending scheduled entries
+  const pending = await getPendingScheduleEntries(
+    c.env.NOTION_TOKEN,
+    c.env.NOTION_SCHEDULE_DB_ID
+  );
+
+  console.log(`Rescheduling ${pending.length} pending entries`);
+
+  // Delete schedule entries and reset content to Ready
+  for (const entry of pending) {
+    try {
+      await deleteScheduleEntry(c.env.NOTION_TOKEN, entry.scheduleId);
+      await markContentReady(c.env.NOTION_TOKEN, entry.contentId);
+    } catch (error) {
+      errors.push(`Failed to reset ${entry.contentId}: ${error}`);
+    }
+  }
+
+  // Re-run the scheduler with adaptive pacing
+  const scheduleResult = await autoScheduleReadyContent(c.env);
+
+  return c.json({
+    cleared: pending.length,
+    scheduled: scheduleResult.scheduled,
+    errors: [...errors, ...scheduleResult.errors],
+  });
 });
 
 // Get status
