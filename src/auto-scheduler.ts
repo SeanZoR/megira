@@ -6,24 +6,18 @@ import {
 } from './notion';
 
 // Optimal posting times for Israeli audience (Israel time)
-// Workweek: Sunday-Thursday
-// Avoid: Friday afternoon (Shabbat prep) and Saturday (Shabbat)
+// Posts every day including weekends
 const OPTIMAL_SLOTS = [
-  { hour: 8, minute: 0 },   // Morning commute
-  { hour: 12, minute: 30 }, // Lunch break
-  { hour: 17, minute: 0 },  // End of work
-  { hour: 20, minute: 0 },  // Evening scroll
+  { hour: 8, minute: 3 },
+  { hour: 12, minute: 35 },
+  { hour: 15, minute: 43 },
+  { hour: 17, minute: 30 },
 ];
 
-// Israeli workweek: Sunday (0) to Thursday (4)
-// Friday (5) only early morning, Saturday (6) skip entirely
-function isValidDay(dayOfWeek: number, hour: number): boolean {
-  // Saturday - never post
-  if (dayOfWeek === 6) return false;
-  // Friday - only before 14:00 (Shabbat prep starts)
-  if (dayOfWeek === 5) return hour < 14;
-  // Sunday-Thursday - all slots valid
-  return true;
+// Add randomness to avoid posting at exact same time every day
+// Returns a random offset between 0 and 12 minutes forward
+function getRandomMinuteOffset(): number {
+  return Math.floor(Math.random() * 13); // 0 to 12
 }
 
 interface Bindings {
@@ -35,7 +29,7 @@ interface Bindings {
 
 /**
  * Get all available time slots for the next 14 days
- * Excludes: slots already taken, Saturdays, Friday afternoons
+ * 4 slots per day, every day, with slight randomness in timing
  */
 function getAvailableSlots(
   timezone: string,
@@ -52,14 +46,11 @@ function getAvailableSlots(
       const localNow = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
       const slotDate = new Date(localNow);
       slotDate.setDate(localNow.getDate() + day);
-      slotDate.setHours(slot.hour, slot.minute, 0, 0);
 
-      // Check if valid day for Israeli audience
-      const dayOfWeek = slotDate.getDay();
-      if (!isValidDay(dayOfWeek, slot.hour)) continue;
+      // Add randomness: base time + 0-12 minutes forward
+      const randomOffset = getRandomMinuteOffset();
+      slotDate.setHours(slot.hour, slot.minute + randomOffset, 0, 0);
 
-      // Convert to UTC for storage and comparison
-      // Calculate offset: Israel is UTC+2 (or +3 in summer)
       const utcSlot = new Date(slotDate.getTime());
 
       // Skip if in the past
