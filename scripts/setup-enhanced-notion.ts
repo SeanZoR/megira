@@ -119,7 +119,7 @@ async function main() {
 
   console.log('   Schedule database created!');
   console.log('   ID:', scheduleDb.id);
-  console.log('   URL:', scheduleDb.url);
+  console.log('   URL:', 'url' in scheduleDb ? scheduleDb.url : 'N/A');
 
   // Step 3: Fetch existing ideas from temp-write page
   console.log('\n3. Fetching ideas from temp-write page...');

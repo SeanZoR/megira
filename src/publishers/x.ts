@@ -167,54 +167,6 @@ export async function postToX(
   return result;
 }
 
-// Generate OAuth 1.0a signature for media upload
-function generateOAuth1Signature(
-  method: string,
-  url: string,
-  params: Record<string, string>,
-  credentials: XCredentials
-): string {
-  const oauthParams: Record<string, string> = {
-    oauth_consumer_key: credentials.apiKey!,
-    oauth_token: credentials.accessTokenOAuth1!,
-    oauth_signature_method: 'HMAC-SHA1',
-    oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
-    oauth_nonce: generateNonce(),
-    oauth_version: '1.0',
-  };
-
-  // Combine all params
-  const allParams = { ...params, ...oauthParams };
-
-  // Sort and encode
-  const sortedKeys = Object.keys(allParams).sort();
-  const paramString = sortedKeys
-    .map(key => `${encodeRFC3986(key)}=${encodeRFC3986(allParams[key])}`)
-    .join('&');
-
-  // Create signature base string
-  const signatureBaseString = [
-    method.toUpperCase(),
-    encodeRFC3986(url),
-    encodeRFC3986(paramString),
-  ].join('&');
-
-  // Create signing key
-  const signingKey = `${encodeRFC3986(credentials.apiKeySecret!)}&${encodeRFC3986(credentials.accessTokenSecret!)}`;
-
-  // Generate HMAC-SHA1 signature
-  const signature = hmacSha1(signingKey, signatureBaseString);
-
-  // Build OAuth header
-  oauthParams['oauth_signature'] = signature;
-
-  const authHeader = 'OAuth ' + Object.keys(oauthParams)
-    .sort()
-    .map(key => `${encodeRFC3986(key)}="${encodeRFC3986(oauthParams[key])}"`)
-    .join(', ');
-
-  return authHeader;
-}
 
 function encodeRFC3986(str: string): string {
   return encodeURIComponent(str)

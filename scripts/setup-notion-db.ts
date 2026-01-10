@@ -69,7 +69,7 @@ async function createDatabase() {
 
     console.log('Database created successfully!');
     console.log('Database ID:', database.id);
-    console.log('URL:', database.url);
+    console.log('URL:', 'url' in database ? database.url : 'N/A');
 
     return database;
   } catch (error) {

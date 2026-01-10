@@ -102,7 +102,7 @@ export async function generateQuoteImage(quote: Quote): Promise<ArrayBuffer> {
   // Convert SVG to PNG using resvg-wasm or return SVG for now
   // In production, you'd use a service like Cloudflare Images or an external API
   const encoder = new TextEncoder();
-  return encoder.encode(svg).buffer;
+  return encoder.encode(svg).buffer as ArrayBuffer;
 }
 
 function escapeHtml(text: string): string {
