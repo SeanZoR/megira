@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 [triggers]
-crons = ["*/15 * * * *"]  # Every 15 minutes
+crons = ["*/10 * * * *"]  # Every 10 minutes
 
 [[kv_namespaces]]
 binding = "KV"
